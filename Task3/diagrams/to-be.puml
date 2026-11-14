@@ -1,0 +1,146 @@
+@startuml
+' Локальная библиотека C4 – без обращения в интернет
+!RELATIVE_INCLUDE = "."
+!include ../../C4PlantUML/C4_Container.puml
+
+AddElementTag("newEl", $bgColor="#2E7D32", $fontColor="#FFFFFF", $borderColor="#1B5E20", $borderThickness="2", $legendText="Зелёный – новая часть, делается первой")
+AddElementTag("changedEl", $bgColor="#438DD5", $fontColor="#FFFFFF", $borderColor="#2E7D32", $borderThickness="4", $legendText="Зелёная рамка – меняется на первом этапе")
+AddElementTag("dangerEl", $bgColor="#438DD5", $fontColor="#FFFFFF", $borderColor="#D32F2F", $borderThickness="4", $legendText="Красная рамка – опасно трогать, на первом этапе без изменений")
+AddRelTag("newRel", $textColor="#2E7D32", $lineColor="#2E7D32", $lineStyle="BoldLine()", $legendText="Зелёная линия – новая или изменённая интеграция")
+
+hide stereotype
+skinparam wrapWidth 320
+LAYOUT_LEFT_RIGHT()
+
+title Контекст платформы RetailCore (TO-BE, первый этап)
+
+' ---------- Люди и внешние системы ----------
+Person(customer, "Клиент", "")
+Person(support, "Оператор поддержки", "")
+Person(businessUsers, "Бизнес-пользователи", "")
+
+System_Ext(marketplaces, "Маркетплейсы", "")
+System_Ext(payments, "Платёжные провайдеры", "Внешняя зависимость")
+System_Ext(delivery, "Службы доставки", "Внешняя зависимость")
+System_Ext(bi, "Внутренние BI / отчёты", "")
+System_Ext(availability, "Сервис наличия", "")
+
+' ---------- Система ----------
+System_Boundary(retailcoreB, "RetailCore TO-BE, первый этап") {
+
+    Container(channels, "Интернет-магазин и мобильные каналы", "", "")
+
+    Boundary(monolithB, "Java-монолит: без изменений на первом этапе") {
+        Container(orderApi, "Checkout / Order API", "Java", "")
+        Container(processing, "Order Processing", "Java", "", $tags="dangerEl")
+        Container(pricing, "Pricing & Promo Logic", "Java", "Надбавки в createOrder остаются")
+        Container(statuses, "Status Management", "Java", "Переходы статусов остаются")
+        Container(paymentOrch, "Payment Orchestration", "Java", "", $tags="dangerEl")
+        Container(deliveryRouting, "Delivery Routing", "Java", "", $tags="dangerEl")
+        Container(notifications, "Уведомления", "Java", "")
+    }
+
+    ContainerDb(oracle, "Oracle", "Oracle", "Изолируется: новые части не читают её напрямую", $tags="dangerEl")
+
+    Boundary(eventsB, "Канонический слой событий – точки 4 и 2") {
+        Container(eventLayer, "Канонический слой событий", "", "Получает смены статусов из Oracle, публикует события заказа, отдаёт статус клиенту и поддержке", $tags="newEl")
+        ContainerDb(eventDb, "БД канонической модели", "", "Единый набор бизнес-событий заказа, последний статус каждого заказа в новой статусной модели, описание потоков данных", $tags="newEl")
+        ContainerQueue(broker, "Брокер событий", "", "Подписка на события заказа", $tags="newEl")
+    }
+
+    Boundary(auxB, "Вспомогательные сервисы") {
+        Container(dotnet, ".NET integration service", ".NET", "Точка 1: контракт вместо общих таблиц, единый контракт статуса доставки", $tags="changedEl")
+        Container(pyAnalytics, "Python analytics jobs", "Python", "Точка 4: события по подписке, тяжёлые отчёты пока из Oracle", $tags="changedEl")
+        Container(promoService, "Промо-сервис", "", "Точка 3: покрывает больше сценариев", $tags="changedEl")
+        Container(scheduledJobs, "Batch-процедуры и ночные SQL-скрипты", "SQL", "Запуск по расписанию")
+    }
+
+    ContainerQueue(asyncLayer, "Async / batch exchange", "", "Очереди, задания, выгрузки")
+
+    Container(adminTools, "Admin / Support tools", "", "Ручные проверки и корректировки")
+}
+
+' ---------- Без изменений ----------
+Rel(customer, channels, "оформление заказа, просмотр статуса")
+Rel(channels, orderApi, "create/update order", "sync")
+Rel(marketplaces, orderApi, "заказы, обновления, статусы")
+
+Rel(orderApi, availability, "наличие", "sync")
+Rel(orderApi, pricing, "расчёт цены, скидок, промо")
+Rel(pricing, promoService, "скидка", "sync")
+Rel(orderApi, processing, "создание и обработка заказа")
+Rel(processing, paymentOrch, "инициировать оплату")
+Rel(processing, deliveryRouting, "выбрать доставку")
+Rel(processing, notifications, "уведомления", "async")
+
+Rel(paymentOrch, payments, "создание платёжной сессии", "sync")
+Rel(deliveryRouting, delivery, "резервирование доставки", "sync / смешанное")
+
+Rel(pricing, oracle, "правила, коэффициенты, запасной расчёт скидки")
+Rel(processing, oracle, "заказ, резерв, служебные таблицы")
+Rel(statuses, oracle, "статусы, история")
+Rel(paymentOrch, oracle, "платёжная сессия")
+Rel(deliveryRouting, oracle, "правила маршрутизации")
+Rel(processing, statuses, "статусы")
+Rel(paymentOrch, statuses, "статусы")
+Rel(scheduledJobs, oracle, "статусы, маршруты", "по расписанию")
+
+Rel(processing, asyncLayer, "события, задания, выгрузки")
+Rel(asyncLayer, dotnet, "обмен для части партнёрских сценариев")
+Rel(dotnet, delivery, "партнёрские логистические интеграции")
+
+Rel(bi, oracle, "отчётные запросы")
+Rel(businessUsers, bi, "управленческие отчёты")
+
+Rel(support, adminTools, "разбор обращений, ручные действия")
+Rel(adminTools, statuses, "ручная корректировка статусов")
+
+' ---------- Новые и изменённые интеграции ----------
+Rel(eventLayer, oracle, "смены статусов", "опрос с заданной частотой", $tags="newRel")
+Rel(eventLayer, eventDb, "события заказа, последний статус", "sync", $tags="newRel")
+Rel(eventLayer, broker, "события заказа", "async", $tags="newRel")
+Rel(broker, dotnet, "события заказа", "подписка", $tags="newRel")
+Rel(broker, pyAnalytics, "события заказа", "подписка", $tags="newRel")
+Rel(channels, eventLayer, "статус заказа", "sync", $tags="newRel")
+Rel(adminTools, eventLayer, "статус заказа", "sync", $tags="newRel")
+Rel(pyAnalytics, oracle, "только тяжёлые отчёты")
+
+' ---------- Что остаётся после первого этапа ----------
+note right of oracle #FDECEA
+  **⚠ Узкое место и центр связности**
+  Длинные транзакции оформления, на распродажах заметно
+  Тяжёлые отчёты аналитики и BI читают ту же операционную БД
+  Половина логики – в процедурах и пакетах
+end note
+
+note right of statuses #FDECEA
+  **⚠ Статусы без одного владельца**
+  Переходы решают ещё Order Processing,
+  Payment Orchestration и batch-процедуры,
+  поддержка правит статусы вручную
+  После сбоя оплаты статус неоднозначен
+end note
+
+note right of processing #FDECEA
+  **⚠ Состояние заказа расходится**
+  Метка выгрузки партнёрам – до оплаты и доставки
+  При сбое брони заказ принят без платёжной сессии
+  CONFIRMED и данные оплаты пишутся раздельно
+end note
+
+note right of deliveryRouting #FDECEA
+  **⚠ Обещание срока доставки**
+  Правила в четырёх местах: код, Oracle,
+  конфиг интеграций, ночные SQL-скрипты
+  Нет правила – молча берётся правило по умолчанию
+end note
+
+note right of pricing #FFF3E0
+  **⚠ Размазанная логика цены**
+  Надбавки за канал и регион зашиты в код
+  Запасной расчёт скидки в Oracle остаётся,
+  правила в нём урезаны
+end note
+
+SHOW_LEGEND()
+@enduml

@@ -1,0 +1,143 @@
+@startuml
+' Локальная библиотека C4 – без обращения в интернет
+!RELATIVE_INCLUDE = "."
+!include ../../C4PlantUML/C4_Container.puml
+
+AddElementTag("critical", $bgColor="#438DD5", $fontColor="#FFFFFF", $borderColor="#D32F2F", $borderThickness="4", $legendText="Красная рамка – критично: бьёт по оформлению, оплате или сроку доставки")
+AddElementTag("significant", $bgColor="#438DD5", $fontColor="#FFFFFF", $borderColor="#F57C00", $borderThickness="2", $legendText="Оранжевая рамка – значимо: замедляет изменения и разбор, заказ проходит")
+AddElementTag("hiddenEl", $bgColor="#FFFFFF", $fontColor="#333333", $borderColor="#7B1FA2", $borderStyle="DashedLine()", $borderThickness="2", $legendText="Белый с пунктиром – элемента нет на исходной схеме")
+AddRelTag("hiddenRel", $textColor="#7B1FA2", $lineColor="#7B1FA2", $lineStyle="DashedLine()", $legendText="Фиолетовый пунктир – скрытая зависимость")
+
+hide stereotype
+skinparam wrapWidth 320
+LAYOUT_LEFT_RIGHT()
+
+title Контекст платформы RetailCore (AS-IS)
+
+' ---------- Люди и внешние системы ----------
+Person(customer, "Клиент", "")
+Person(support, "Оператор поддержки", "")
+Person(businessUsers, "Бизнес-пользователи", "")
+
+System_Ext(marketplaces, "Маркетплейсы", "")
+System_Ext(payments, "Платёжные провайдеры", "Внешняя зависимость")
+System_Ext(delivery, "Службы доставки", "Внешняя зависимость")
+System_Ext(bi, "Внутренние BI / отчёты", "")
+System_Ext(availability, "Сервис наличия", "", $tags="hiddenEl")
+
+' ---------- Система ----------
+System_Boundary(retailcoreB, "RetailCore AS-IS") {
+
+    Container(channels, "Интернет-магазин и мобильные каналы", "", "")
+
+    Boundary(monolithB, "Java-монолит: центральный контур обработки заказов") {
+        Container(orderApi, "Checkout / Order API", "Java", "")
+        Container(processing, "Order Processing", "Java", "", $tags="critical")
+        Container(pricing, "Pricing & Promo Logic", "Java", "", $tags="significant")
+        Container(statuses, "Status Management", "Java", "", $tags="critical")
+        Container(paymentOrch, "Payment Orchestration", "Java", "")
+        Container(deliveryRouting, "Delivery Routing", "Java", "", $tags="critical")
+        Container(notifications, "Уведомления", "Java", "", $tags="hiddenEl")
+    }
+
+    ContainerDb(oracle, "Oracle", "Oracle", "Операционная БД + часть бизнес-логики + интеграционный слой", $tags="critical")
+
+    Boundary(auxB, "Вспомогательные сервисы") {
+        Container(dotnet, ".NET integration service", ".NET", "Партнёрские интеграции")
+        Container(pyAnalytics, "Python analytics jobs", "Python", "Аналитические выгрузки")
+        Container(promoService, "Промо-сервис", "", "", $tags="hiddenEl")
+        Container(scheduledJobs, "Batch-процедуры и ночные SQL-скрипты", "SQL", "Запуск по расписанию", $tags="hiddenEl")
+    }
+
+    ContainerQueue(asyncLayer, "Async / batch exchange", "", "Очереди, задания, выгрузки", $tags="significant")
+
+    Container(adminTools, "Admin / Support tools", "", "Ручные проверки и корректировки")
+}
+
+' ---------- Связи ----------
+Rel(customer, channels, "оформление заказа, просмотр статуса")
+Rel(channels, orderApi, "create/update order", "sync")
+Rel(marketplaces, orderApi, "заказы, обновления, статусы")
+
+Rel(orderApi, pricing, "расчёт цены, скидок, промо")
+Rel(orderApi, processing, "создание и обработка заказа")
+Rel(processing, paymentOrch, "инициировать оплату")
+Rel(processing, deliveryRouting, "выбрать доставку")
+
+Rel(paymentOrch, payments, "создание платёжной сессии", "sync")
+Rel(deliveryRouting, delivery, "резервирование доставки", "sync / смешанное")
+
+Rel(pricing, oracle, "правила, коэффициенты, legacy promo logic")
+Rel(processing, oracle, "заказ, резерв, служебные таблицы")
+Rel(statuses, oracle, "статусы, история, технические состояния")
+Rel(paymentOrch, oracle, "payment_session_id, технические атрибуты")
+Rel(deliveryRouting, oracle, "правила маршрутизации, партнёры, retry-состояния")
+
+Rel(processing, asyncLayer, "события, задания, выгрузки")
+Rel(asyncLayer, dotnet, "обмен для части партнёрских сценариев")
+Rel(dotnet, oracle, "staging/shared tables")
+Rel(dotnet, delivery, "партнёрские логистические интеграции")
+
+Rel(pyAnalytics, oracle, "прямые выборки, витрины, долгие отчёты")
+Rel(asyncLayer, pyAnalytics, "batch/async данные")
+Rel(bi, oracle, "отчётные запросы")
+Rel(businessUsers, bi, "управленческие отчёты")
+
+Rel(support, adminTools, "разбор обращений, ручные действия")
+Rel(adminTools, statuses, "ручная проверка / корректировка статусов")
+Rel(adminTools, oracle, "просмотр технических атрибутов заказа")
+
+' ---------- Скрытые зависимости ----------
+Rel(orderApi, availability, "наличие", "sync", $tags="hiddenRel")
+Rel(pricing, promoService, "скидка", "sync", $tags="hiddenRel")
+Rel(processing, notifications, "уведомления", "async", $tags="hiddenRel")
+Rel(processing, statuses, "статусы", $tags="hiddenRel")
+Rel(paymentOrch, statuses, "статусы", $tags="hiddenRel")
+Rel(scheduledJobs, oracle, "статусы, маршруты", "по расписанию", $tags="hiddenRel")
+
+' ---------- Проблемные зоны ----------
+note right of oracle #FDECEA
+  **⚠ Узкое место и центр связности**
+  Длинные транзакции оформления, на распродажах заметно
+  Аналитика и BI читают ту же операционную БД
+  Обмен с .NET через staging-таблицы
+  Половина логики – в процедурах и пакетах
+end note
+
+note right of statuses #FDECEA
+  **⚠ Статусы без одного владельца**
+  Переходы решают ещё Order Processing,
+  Payment Orchestration и batch-процедуры,
+  поддержка правит статусы вручную
+  После сбоя оплаты статус неоднозначен
+end note
+
+note right of processing #FDECEA
+  **⚠ Состояние заказа расходится**
+  Метка выгрузки партнёрам – до оплаты и доставки
+  При сбое брони заказ принят без платёжной сессии
+  CONFIRMED и данные оплаты пишутся раздельно
+end note
+
+note right of deliveryRouting #FDECEA
+  **⚠ Обещание срока доставки**
+  Правила в четырёх местах: код, Oracle,
+  конфиг интеграций, ночные SQL-скрипты
+  Нет правила – молча берётся правило по умолчанию
+end note
+
+note right of pricing #FFF3E0
+  **⚠ Размазанная логика цены**
+  Надбавки за канал и регион зашиты в код
+  Скидку считают два места,
+  запасной путь – по урезанным правилам
+end note
+
+note right of asyncLayer #FFF3E0
+  **⚠ Разная семантика доставки сообщений**
+  Защита от дублей решена по-разному
+  Дубли заявок партнёрам разбирают вручную
+end note
+
+SHOW_LEGEND()
+@enduml
